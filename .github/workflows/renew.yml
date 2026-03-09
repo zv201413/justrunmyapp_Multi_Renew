@@ -1,19 +1,13 @@
-name: JustRunMy 多账号续期
-
+name: JustRunMy 自动续期
 on:
-  workflow_dispatch: # 支持手动点击运行
+  workflow_dispatch:
   schedule:
-    - cron: '0 1 */2 * *' # 每两天运行一次
+    - cron: '0 1 */2 * *'
 
 jobs:
   renew:
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false # 即使账号1失败，账号2也会继续运行
-      matrix:
-        # 这里定义后缀，有几个号就写几个，比如你有两个号就写 ['1', '2']
-        suffix: ['1', '2']
-
+    timeout-minutes: 30
     steps:
       - name: 📥 下载代码
         uses: actions/checkout@v4
@@ -22,25 +16,36 @@ jobs:
         uses: actions/setup-python@v4
         with:
           python-version: '3.11'
-          
+
+      - name: 🛡️ 启动 Gost 代理转发 (可选)
+        env:
+          GOST_PROXY_TARGET: ${{ secrets.GOST_PROXY_TARGET }}
+        run: |
+          if [ -z "$GOST_PROXY_TARGET" ]; then
+            echo "USE_PROXY=false" >> $GITHUB_ENV
+          else
+            wget -q https://github.com/ginuerzh/gost/releases/download/v2.11.5/gost-linux-amd64-2.11.5.gz
+            gunzip gost-linux-amd64-2.11.5.gz
+            chmod +x gost-linux-amd64-2.11.5
+            mv gost-linux-amd64-2.11.5 gost
+            nohup ./gost -L http://:8080 -F $GOST_PROXY_TARGET > /dev/null 2>&1 &
+            sleep 3
+            echo "USE_PROXY=true" >> $GITHUB_ENV
+          fi
+
       - name: 🛠️ 安装系统依赖
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
-            xvfb \
-            x11-utils \
-            xdotool \
-            scrot \
-            fonts-noto-cjk
-            
+          sudo apt-get install -y xvfb x11-utils xdotool scrot fonts-noto-cjk
+
       - name: 🐍 安装 Python 依赖
         run: |
-          pip install seleniumbase aiohttp requests
+          pip install seleniumbase requests
           seleniumbase install chromedriver
 
       - name: 🚀 运行续期脚本
         env:
-          # 必须将 GitHub Secrets 映射到脚本识别的变量名
+          # 对接你指定的 6 个环境变量
           EML_1: ${{ secrets.EML_1 }}
           PWD_1: ${{ secrets.PWD_1 }}
           EML_2: ${{ secrets.EML_2 }}
@@ -48,31 +53,12 @@ jobs:
           TG_TOKEN: ${{ secrets.TG_TOKEN }}
           TG_ID: ${{ secrets.TG_ID }}
         run: |
-          # 1. 强力杀死可能残留的浏览器和驱动进程，确保每个矩阵任务环境纯净
-          pkill -f chrome || true
-          pkill -f chromium || true
-          pkill -f chromedriver || true
-          
-          # 2. 清理当前目录下的所有缓存文件夹和临时文件
-          rm -rf ~/.config/google-chrome
-          rm -rf /tmp/.com.google.Chrome.*
-          rm -f *.png  # 删除上次运行留下的截图
-          
-          # 3. 检查文件是否存在 (调试用)
-          ls -F
-          
-          # 4. 随机等待，避免多个账号同时撞上服务器检测
-          sleep $((RANDOM % 30))
-          
-          # 5. 运行重命名后的脚本
           xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" \
             python reset_timer.py
-            
+
       - name: 📸 上传调试截图
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          # 截图文件夹会带上账号后缀，方便你区分哪个号出问题
-          name: debug-screenshots-acc-${{ matrix.suffix }}
+          name: debug-screenshots
           path: "*.png"
-          retention-days: 3
