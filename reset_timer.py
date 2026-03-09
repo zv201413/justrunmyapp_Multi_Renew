@@ -9,7 +9,7 @@ import requests
 from seleniumbase import SB
 
 # ============================================================
-#  环境变量配置 (严格对接 EML_1, PWD_1, EML_2, PWD_2, TG_TOKEN, TG_ID)
+#  环境变量配置
 # ============================================================
 ACCOUNTS = []
 if os.environ.get("EML_1") and os.environ.get("PWD_1"):
@@ -27,7 +27,7 @@ if not ACCOUNTS:
 DYNAMIC_APP_NAME = "未知应用"
 
 # ============================================================
-#  核心逻辑：JS 注入与坐标计算 (保持原版逻辑)
+#  JS 逻辑
 # ============================================================
 _EXPAND_JS = """(function() { var ts = document.querySelector('input[name="cf-turnstile-response"]'); if (!ts) return 'no-turnstile'; var el = ts; for (var i = 0; i < 20; i++) { el = el.parentElement; if (!el) break; var s = window.getComputedStyle(el); if (s.overflow === 'hidden' || s.overflowX === 'hidden' || s.overflowY === 'hidden') el.style.overflow = 'visible'; el.style.minWidth = 'max-content'; } document.querySelectorAll('iframe').forEach(function(f){ if (f.src && f.src.includes('challenges.cloudflare.com')) { f.style.width = '300px'; f.style.height = '65px'; f.style.minWidth = '300px'; f.style.visibility = 'visible'; f.style.opacity = '1'; } }); return 'done'; })()"""
 _SOLVED_JS = """(function(){ var i = document.querySelector('input[name="cf-turnstile-response"]'); return !!(i && i.value && i.value.length > 20); })()"""
@@ -36,7 +36,7 @@ _COORDS_JS = """(function(){ var iframes = document.querySelectorAll('iframe'); 
 _WININFO_JS = """(function(){ return {sx: window.screenX || 0, sy: window.screenY || 0, oh: window.outerHeight, ih: window.innerHeight}; })()"""
 
 # ============================================================
-#  物理级操作：xdotool
+#  辅助函数
 # ============================================================
 def _activate_window():
     for cls in ["chrome", "chromium", "Chromium", "Chrome"]:
@@ -53,7 +53,7 @@ def _xdotool_click(x, y):
     _activate_window()
     try:
         subprocess.run(["xdotool", "mousemove", "--sync", str(x), str(y)], timeout=3)
-        time.sleep(0.1)
+        time.sleep(0.15)
         subprocess.run(["xdotool", "click", "1"], timeout=2)
     except:
         os.system(f"xdotool mousemove {x} {y} click 1 2>/dev/null")
@@ -76,13 +76,17 @@ def handle_turnstile(sb):
         time.sleep(5)
     return False
 
-def js_fill(sb, selector, text):
-    sb.execute_script(f'document.querySelector("{selector}").value = "{text}";')
-    sb.execute_script(f'document.querySelector("{selector}").dispatchEvent(new Event("input", {{bubbles:true}}));')
+# 采用更安全的参数传递方式，防止特殊字符导致 JS 语法错误
+def safe_js_fill(sb, selector, text):
+    script = """
+        var el = document.querySelector(arguments[0]);
+        if (el) {
+            el.value = arguments[1];
+            el.dispatchEvent(new Event('input', { bubbles: true }));
+        }
+    """
+    sb.execute_script(script, selector, text)
 
-# ============================================================
-#  Telegram 消息
-# ============================================================
 def send_msg(status, timer):
     if not TG_TOKEN or not TG_ID: return
     now = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time.time()+8*3600))
@@ -91,7 +95,7 @@ def send_msg(status, timer):
     except: pass
 
 # ============================================================
-#  主逻辑
+#  主流程
 # ============================================================
 def run_task(sb, acc):
     global DYNAMIC_APP_NAME
@@ -99,11 +103,20 @@ def run_task(sb, acc):
     
     sb.uc_open_with_reconnect("https://justrunmy.app/id/Account/Login")
     sb.wait_for_element('input[name="Email"]')
-    js_fill(sb, 'input[name="Email"]', acc['email'])
-    js_fill(sb, 'input[name="Password"]', acc['pwd'])
-    if sb.execute_script(_EXISTS_JS): handle_turnstile(sb)
+    
+    # 使用新版安全填充函数
+    safe_js_fill(sb, 'input[name="Email"]', acc['email'])
+    safe_js_fill(sb, 'input[name="Password"]', acc['pwd'])
+    
+    if sb.execute_script(_EXISTS_JS): 
+        handle_turnstile(sb)
+    
     sb.press_keys('input[name="Password"]', '\n')
     time.sleep(5)
+    
+    if "Login" in sb.get_current_url():
+        sb.save_screenshot("login_failed.png")
+        raise Exception("仍处于登录页，可能是验证码未过或账号密码错")
 
     sb.open("https://justrunmy.app/panel")
     sb.wait_for_element('h3.font-semibold')
@@ -111,10 +124,11 @@ def run_task(sb, acc):
     sb.click('h3.font-semibold')
     time.sleep(3)
     
-    print("🖱️ 点击 Reset Timer 按钮...")
     sb.click('button:contains("Reset Timer")')
     time.sleep(3)
-    if sb.execute_script(_EXISTS_JS): handle_turnstile(sb)
+    if sb.execute_script(_EXISTS_JS): 
+        handle_turnstile(sb)
+    
     sb.click('button:contains("Just Reset")')
     time.sleep(8)
     
@@ -127,8 +141,9 @@ def run_task(sb, acc):
 def main():
     use_proxy = os.environ.get("USE_PROXY", "false").lower() == "true"
     kwargs = {"uc": True, "test": True, "headless": False}
-    if use_proxy: kwargs["proxy"] = "http://127.0.0.1:8080"
-
+    if use_proxy: 
+        kwargs["proxy"] = "http://127.0.0.1:8080"
+    
     with SB(**kwargs) as sb:
         for acc in ACCOUNTS:
             try:
@@ -137,6 +152,7 @@ def main():
                 time.sleep(2)
             except Exception as e:
                 print(f"❌ {acc['tag']} 失败: {e}")
+                sb.save_screenshot(f"error_{acc['tag']}.png")
                 send_msg("❌ 运行失败", str(e)[:30])
 
 if __name__ == "__main__":
