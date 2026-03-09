@@ -1,11 +1,11 @@
-name: JustRunMy 自动续期 (全自动智能化版)
+name: JustRunMy 自动续期 (全自动随机顺序版)
 on:
   workflow_dispatch:
   schedule:
-    - cron: '0 1 */2 * *'
+    # 每天凌晨 02:30 触发
+    - cron: '30 2 * * *' 
 
 jobs:
-  # --- 第一步：动态计算账号数量 ---
   setup:
     runs-on: ubuntu-latest
     outputs:
@@ -14,18 +14,18 @@ jobs:
       - id: set-matrix
         shell: bash
         env:
-          # 将所有 secrets 转为 JSON 字符串
           ALL_SECRETS: ${{ toJson(secrets) }}
         run: |
-          # 提取所有 EML_ 开头的变量名中的数字，生成 JSON 数组
+          # 自动检索所有 EML_ 开头的 Secrets 并生成任务序列
           COUNT=$(echo "$ALL_SECRETS" | jq -r 'keys[] | select(startswith("EML_"))' | sed 's/EML_//' | sort -n | jq -R . | jq -s -c .)
           echo "matrix=$COUNT" >> $GITHUB_OUTPUT
 
-  # --- 第二步：根据计算结果运行续期 ---
   renew:
     needs: setup
     runs-on: ubuntu-latest
     strategy:
+      # 【核心优化】max-parallel: 1 确保账号之间顺序执行，不重叠
+      max-parallel: 1
       matrix:
         account_index: ${{ fromJson(needs.setup.outputs.matrix) }}
       fail-fast: false
@@ -39,17 +39,26 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: 🛠️ 安装环境
+      - name: 🛠️ 安装环境依赖
         run: |
           sudo apt-get update
           sudo apt-get install -y xvfb x11-utils xdotool fonts-noto-cjk
           pip install seleniumbase requests
           seleniumbase install chromedriver
 
+      - name: 🎲 随机延迟 (防风控模拟)
+        # 仅在定时触发时随机挂机，手动触发时立即执行
+        if: github.event_name == 'schedule'
+        run: |
+          # 随机休眠 0 到 15 小时 (54000秒)
+          # 结合顺序执行，账号 A 和 B 的实际执行时间将被彻底打乱
+          RANDOM_DELAY=$(( RANDOM % 54000 ))
+          echo "为了模拟真实访问，账号 ${{ matrix.account_index }} 随机延迟 $RANDOM_DELAY 秒后启动..."
+          sleep $RANDOM_DELAY
+
       - name: 🚀 运行原版脚本
         env:
-          # 动态映射：从 Secrets 组中动态提取对应索引的值
-          # 这行代码会把 secrets["EML_1"] 映射给 JUSTRUNMY_EMAIL
+          # 动态映射 Secrets 到脚本环境变量
           JUSTRUNMY_EMAIL: ${{ secrets[format('EML_{0}', matrix.account_index)] }}
           JUSTRUNMY_PASSWORD: ${{ secrets[format('PWD_{0}', matrix.account_index)] }}
           TG_BOT_TOKEN: ${{ secrets.TG_TOKEN }}
